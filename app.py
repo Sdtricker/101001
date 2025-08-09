@@ -38,27 +38,95 @@ def get_email_info_from_page(email: str) -> dict:
     options.add_argument('--disable-dev-shm-usage')
     options.add_argument('--disable-gpu')
     options.add_argument('--disable-features=VizDisplayCompositor')
+    options.add_argument('--disable-web-security')
+    options.add_argument('--allow-running-insecure-content')
+    options.add_argument('--disable-extensions')
     options.add_argument("--disable-blink-features=AutomationControlled")
     options.add_experimental_option("excludeSwitches", ["enable-automation"])
     options.add_experimental_option('useAutomationExtension', False)
     options.add_argument('user-agent=Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/108.0.0.0 Safari/537.36')
     
-    # Get chromium binary path dynamically
-    try:
-        chromium_path = subprocess.check_output(['which', 'chromium']).decode('utf-8').strip()
-        options.binary_location = chromium_path
-    except subprocess.CalledProcessError:
-        # Fallback to common paths
-        options.binary_location = '/usr/bin/chromium-browser'
+    # Check if running on Render or similar cloud platform
+    if os.environ.get('RENDER') or os.environ.get('HEROKU'):
+        # Additional options for cloud deployment
+        options.add_argument('--single-process')
+        options.add_argument('--disable-background-timer-throttling')
+        options.add_argument('--disable-backgrounding-occluded-windows')
+        options.add_argument('--disable-renderer-backgrounding')
+        
+        # Try different Chrome paths that might exist on Render
+        chrome_paths = [
+            '/usr/bin/google-chrome',
+            '/usr/bin/google-chrome-stable',
+            '/opt/google/chrome/google-chrome',
+            '/usr/bin/chromium-browser'
+        ]
+        
+        chromedriver_paths = [
+            '/usr/local/bin/chromedriver',
+            '/usr/bin/chromedriver',
+            '/opt/chromedriver/chromedriver'
+        ]
+        
+        # Find Chrome binary
+        chrome_found = False
+        for chrome_path in chrome_paths:
+            if os.path.exists(chrome_path):
+                options.binary_location = chrome_path
+                chrome_found = True
+                logging.info(f"Found Chrome at: {chrome_path}")
+                break
+        
+        if not chrome_found:
+            raise Exception("Chrome not found on cloud platform. Please ensure Chrome is installed in build step.")
+        
+        # Find ChromeDriver
+        chromedriver_found = False
+        chromedriver_path = None
+        for path in chromedriver_paths:
+            if os.path.exists(path):
+                chromedriver_path = path
+                chromedriver_found = True
+                logging.info(f"Found ChromeDriver at: {chromedriver_path}")
+                break
+        
+        try:
+            if chromedriver_found and chromedriver_path:
+                service = ChromeService(executable_path=chromedriver_path)
+                driver = webdriver.Chrome(service=service, options=options)
+            else:
+                # Let Selenium manage ChromeDriver automatically
+                driver = webdriver.Chrome(options=options)
+        except Exception as e:
+            logging.error(f"Failed to start Chrome on cloud platform: {e}")
+            raise Exception("Chrome/Chromedriver not properly configured for cloud deployment. Please ensure Chrome and ChromeDriver are installed in build step.")
+    else:
+        # For local development (Replit, local machine)
+        try:
+            # Try to find chromium/chrome locally
+            try:
+                chromium_path = subprocess.check_output(['which', 'chromium']).decode('utf-8').strip()
+                options.binary_location = chromium_path
+            except subprocess.CalledProcessError:
+                try:
+                    chrome_path = subprocess.check_output(['which', 'google-chrome']).decode('utf-8').strip()
+                    options.binary_location = chrome_path
+                except subprocess.CalledProcessError:
+                    # Fallback to common paths
+                    options.binary_location = '/usr/bin/chromium-browser'
 
-    # Get chromedriver path dynamically
-    try:
-        chromedriver_path = subprocess.check_output(['which', 'chromedriver']).decode('utf-8').strip()
-        service = ChromeService(executable_path=chromedriver_path)
-        driver = webdriver.Chrome(service=service, options=options)
-    except subprocess.CalledProcessError:
-        # Fallback to default
-        driver = webdriver.Chrome(options=options)
+            # Try to find chromedriver
+            try:
+                chromedriver_path = subprocess.check_output(['which', 'chromedriver']).decode('utf-8').strip()
+                service = ChromeService(executable_path=chromedriver_path)
+                driver = webdriver.Chrome(service=service, options=options)
+            except subprocess.CalledProcessError:
+                # Let Selenium manage chromedriver automatically
+                driver = webdriver.Chrome(options=options)
+                
+        except Exception as e:
+            logging.error(f"Failed to start Chrome locally: {e}")
+            raise Exception("Chrome/Chromedriver not found. Please install Chrome and chromedriver.")
     driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
 
     final_data = {}
