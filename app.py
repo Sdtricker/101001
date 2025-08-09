@@ -22,25 +22,36 @@ app = Flask(__name__)
 def install_chrome_on_render():
     """Install Chrome and ChromeDriver on Render platform"""
     try:
-        # Create directories
-        chrome_dir = "/tmp/chrome"
-        chromedriver_dir = "/tmp/chromedriver"
-        os.makedirs(chrome_dir, exist_ok=True)
-        os.makedirs(chromedriver_dir, exist_ok=True)
+        # Use /opt directory for better permissions on Render
+        chrome_dir = "/opt/chrome"
+        chromedriver_dir = "/opt"
         
-        # Download and extract Chrome
-        chrome_url = "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
-        chrome_deb = "/tmp/chrome.deb"
+        # Try to create directories with fallback to /tmp
+        try:
+            os.makedirs(chrome_dir, exist_ok=True)
+        except PermissionError:
+            chrome_dir = "/tmp/chrome"
+            os.makedirs(chrome_dir, exist_ok=True)
         
-        logging.info("Downloading Chrome...")
-        urllib.request.urlretrieve(chrome_url, chrome_deb)
+        try:
+            os.makedirs(chromedriver_dir, exist_ok=True)
+        except PermissionError:
+            chromedriver_dir = "/tmp"
         
-        # Extract Chrome deb package
-        subprocess.run(["dpkg-deb", "-x", chrome_deb, chrome_dir], check=True)
+        # Download Chrome binary directly (more reliable than deb)
+        chrome_url = "https://storage.googleapis.com/chrome-for-testing-public/119.0.6045.105/linux64/chrome-linux64.zip"
+        chrome_zip = "/tmp/chrome.zip"
+        
+        logging.info("Downloading Chrome binary...")
+        urllib.request.urlretrieve(chrome_url, chrome_zip)
+        
+        # Extract Chrome
+        with zipfile.ZipFile(chrome_zip, 'r') as zip_ref:
+            zip_ref.extractall(chrome_dir)
         
         # Download ChromeDriver
         logging.info("Downloading ChromeDriver...")
-        chromedriver_url = "https://chromedriver.storage.googleapis.com/114.0.5735.90/chromedriver_linux64.zip"
+        chromedriver_url = "https://storage.googleapis.com/chrome-for-testing-public/119.0.6045.105/linux64/chromedriver-linux64.zip"
         chromedriver_zip = "/tmp/chromedriver.zip"
         
         urllib.request.urlretrieve(chromedriver_url, chromedriver_zip)
@@ -49,16 +60,74 @@ def install_chrome_on_render():
         with zipfile.ZipFile(chromedriver_zip, 'r') as zip_ref:
             zip_ref.extractall(chromedriver_dir)
         
-        # Make ChromeDriver executable
-        chromedriver_path = os.path.join(chromedriver_dir, "chromedriver")
-        os.chmod(chromedriver_path, stat.S_IRWXU | stat.S_IRGRP | stat.S_IXGRP | stat.S_IROTH | stat.S_IXOTH)
+        # Set executable permissions
+        chrome_binary = os.path.join(chrome_dir, "chrome-linux64", "chrome")
+        chromedriver_binary = os.path.join(chromedriver_dir, "chromedriver-linux64", "chromedriver")
         
-        logging.info("Chrome and ChromeDriver installed successfully")
-        return os.path.join(chrome_dir, "usr/bin/google-chrome"), chromedriver_path
+        os.chmod(chrome_binary, 0o755)
+        os.chmod(chromedriver_binary, 0o755)
+        
+        # Clean up zip files
+        os.remove(chrome_zip)
+        os.remove(chromedriver_zip)
+        
+        logging.info(f"Chrome installed at: {chrome_binary}")
+        logging.info(f"ChromeDriver installed at: {chromedriver_binary}")
+        
+        return chrome_binary, chromedriver_binary
         
     except Exception as e:
         logging.error(f"Failed to install Chrome: {e}")
-        return None, None
+        # Try alternative download method
+        try:
+            logging.info("Trying alternative Chrome installation...")
+            return install_chrome_alternative()
+        except:
+            return None, None
+
+def install_chrome_alternative():
+    """Alternative Chrome installation method"""
+    import tempfile
+    import shutil
+    
+    # Use temporary directory
+    temp_dir = tempfile.mkdtemp()
+    
+    # Download standalone Chrome
+    chrome_url = "https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb"
+    deb_file = os.path.join(temp_dir, "chrome.deb")
+    
+    urllib.request.urlretrieve(chrome_url, deb_file)
+    
+    # Extract without dpkg
+    extract_dir = os.path.join(temp_dir, "chrome_extracted")
+    os.makedirs(extract_dir)
+    
+    # Use ar to extract deb
+    subprocess.run(["ar", "x", deb_file], cwd=extract_dir, check=True)
+    
+    # Extract data.tar.xz
+    subprocess.run(["tar", "-xf", "data.tar.xz"], cwd=extract_dir, check=True)
+    
+    # Find Chrome binary
+    chrome_binary = os.path.join(extract_dir, "opt", "google", "chrome", "google-chrome")
+    
+    # Download ChromeDriver
+    chromedriver_url = "https://chromedriver.storage.googleapis.com/119.0.6045.105/chromedriver_linux64.zip"
+    chromedriver_zip = os.path.join(temp_dir, "chromedriver.zip")
+    
+    urllib.request.urlretrieve(chromedriver_url, chromedriver_zip)
+    
+    with zipfile.ZipFile(chromedriver_zip, 'r') as zip_ref:
+        zip_ref.extractall(temp_dir)
+    
+    chromedriver_binary = os.path.join(temp_dir, "chromedriver")
+    
+    # Set permissions
+    os.chmod(chrome_binary, 0o755)
+    os.chmod(chromedriver_binary, 0o755)
+    
+    return chrome_binary, chromedriver_binary
 
 def scrape_card_data(driver, card_id: str, card_title: str) -> list[str]:
     """Scrape data from a specific card on the page"""
@@ -104,14 +173,18 @@ def get_email_info_from_page(email: str) -> dict:
             '/usr/bin/google-chrome-stable',
             '/opt/google/chrome/google-chrome',
             '/usr/bin/chromium-browser',
-            '/tmp/chrome/usr/bin/google-chrome'  # Our installed Chrome
+            '/opt/chrome/chrome-linux64/chrome',
+            '/tmp/chrome/chrome-linux64/chrome',
+            '/tmp/chrome_extracted/opt/google/chrome/google-chrome'
         ]
         
         chromedriver_paths = [
             '/usr/local/bin/chromedriver',
             '/usr/bin/chromedriver',
             '/opt/chromedriver/chromedriver',
-            '/tmp/chromedriver/chromedriver'  # Our installed ChromeDriver
+            '/opt/chromedriver-linux64/chromedriver',
+            '/tmp/chromedriver-linux64/chromedriver',
+            '/tmp/chromedriver'
         ]
         
         # Find Chrome binary
@@ -127,12 +200,25 @@ def get_email_info_from_page(email: str) -> dict:
         # If Chrome not found, try to install it
         if not chrome_found:
             logging.info("Chrome not found, attempting to install...")
-            chrome_path, installed_chromedriver_path = install_chrome_on_render()
-            if chrome_path and os.path.exists(chrome_path):
-                chrome_found = True
-                # Add the installed chromedriver path to search list
-                if installed_chromedriver_path:
-                    chromedriver_paths.insert(0, installed_chromedriver_path)
+            try:
+                chrome_path, installed_chromedriver_path = install_chrome_on_render()
+                if chrome_path and os.path.exists(chrome_path):
+                    chrome_found = True
+                    logging.info(f"Successfully installed Chrome at: {chrome_path}")
+                    # Add the installed chromedriver path to search list
+                    if installed_chromedriver_path and os.path.exists(installed_chromedriver_path):
+                        chromedriver_paths.insert(0, installed_chromedriver_path)
+                        logging.info(f"Successfully installed ChromeDriver at: {installed_chromedriver_path}")
+            except Exception as install_error:
+                logging.error(f"Chrome installation failed: {install_error}")
+                # Try using selenium manager as last resort
+                try:
+                    driver = webdriver.Chrome(options=options)
+                    driver.execute_script("Object.defineProperty(navigator, 'webdriver', {get: () => undefined})")
+                    # Continue with normal flow
+                except Exception as selenium_error:
+                    logging.error(f"Selenium manager failed: {selenium_error}")
+                    raise Exception("Chrome installation and selenium manager both failed on cloud platform")
         
         if not chrome_found or not chrome_path:
             raise Exception("Chrome not found and installation failed on cloud platform.")
